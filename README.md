@@ -1,25 +1,23 @@
 # CSProtobufDumper
 A tool to extract .proto definitions from compiled C# assemblies that use Google.Protobuf
 
-Target Game: Black Myth: Wukong (Technically, any unobfuscated .net managed program that uses Google.Protobuf is dumpable)
+Target Game: Black Myth: Wukong (Technically, any unobfuscated .NET managed program that uses `Google.Protobuf` and has `MergeFrom` method logic similar to that of the game is dumpable)
 
 # KNOWN ISSUES
 
-1. OneOf is not supported
-
-2. Field numbers always start at 1, which may not match the original numbering
+1. OneOf is not supported (It seems that they do not exist in the game)
 
 ## USAGE
 
-1. build it via Visual Studio 2022 or `dotnet build`
+1. Build it via Visual Studio 2022 or `dotnet build`
 
-2. put all assemblies(.dll) in same folder as the executable
+2. Put all assemblies(.dll) in same folder as the executable
 
-3. run the program
+3. Run the program
 
-4. you will be left with an `Output` folder, containing the protobuf definitions
+4. You will be left with an `Output` folder, containing the protobuf definitions
 
-5. for more usage, run it with `-h`
+5. For more usage, run it with `-h`
 
 ## Credit
 - [Dumpcs2Protobuf](https://github.com/Hiro420/Dumpcs2Protobuf): Code Reference

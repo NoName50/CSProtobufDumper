@@ -6,11 +6,11 @@ namespace CSProtobufDumper
     {
         public string protoName = "";
         public List<string> importNameList = new List<string>();
-        public List<ProtoFIeld> fieldList = new List<ProtoFIeld>();
+        public List<ProtoField> fieldList = new List<ProtoField>();
         public List<OneOf> oneOfList = new List<OneOf>();    
     }
 
-    public class ProtoFIeld
+    public class ProtoField
     {
         public string fieldName = "";
         public string fieldType = "";
@@ -23,7 +23,7 @@ namespace CSProtobufDumper
     public class OneOf
     {
         public string oneOfName = "";
-        public List<ProtoFIeld> fieldList = new List<ProtoFIeld>();
+        public List<ProtoField> fieldList = new List<ProtoField>();
     }
 
     public class ProtoEnum
