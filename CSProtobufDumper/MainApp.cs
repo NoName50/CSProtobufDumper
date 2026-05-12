@@ -12,9 +12,11 @@ namespace CSProtobufDumper
 {
     public class MainApp
     {
-        static bool Verbose = false;
-
         static string OutputFolder = Path.Combine(Directory.GetCurrentDirectory(), "Output");
+
+        static bool FlattenPackageFolders = false;
+
+        static bool Verbose = false;
 
         // Type Reference:
         // https://protobuf.dev/programming-guides/proto3/#scalar
@@ -51,6 +53,10 @@ namespace CSProtobufDumper
                 {
                     switch (arg)
                     {
+                        case "-f":
+                        case "--flatten":
+                            FlattenPackageFolders = true;
+                            break;
                         case "-h":
                         case "--help":
                             Console.WriteLine(@"CSharp Protobuf Dumper
@@ -59,9 +65,10 @@ If no dll or folder is specified, all dlls in the current directory will be proc
 
 Usage: CSProtobufDumper [options] [dll/folder]...
 Options:
-  -h, --help\tShow this help message and exit
-  -o, --output <folder>\tSpecify output folder for generated .proto files (default: ./Output)
-  -v, --verbose\tEnable verbose output");
+  -f, --flatten	Flatten package folders in output (default: false)
+  -h, --help	Show this help message and exit
+  -o, --output <folder>	Specify output folder for generated .proto files (default: ./Output)
+  -v, --verbose	Enable verbose output");
                             return;
                         case "-o":
                         case "--output":
@@ -95,6 +102,7 @@ Options:
             {
                 inputPaths.AddRange(Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll", SearchOption.TopDirectoryOnly));
             }
+            CallContext.LogicalSetData("options", new object[] { FlattenPackageFolders, OutputFolder, Verbose });
             Stopwatch stopwatch = Stopwatch.StartNew();
             foreach (string dll in inputPaths)
             {
@@ -102,6 +110,10 @@ Options:
                 CallContext.LogicalSetData("assemblyPath", dll);
                 domain.DoCallBack(() =>
                 {
+                    object[] options = (object[])CallContext.LogicalGetData("options");
+                    FlattenPackageFolders = (bool)options[0];
+                    OutputFolder = (string)options[1];
+                    Verbose = (bool)options[2];
                     uint assemblyProtoCount = 0;
                     Dump((string)CallContext.LogicalGetData("assemblyPath"), ref assemblyProtoCount);
                     CallContext.LogicalSetData("assemblyProtoCount", assemblyProtoCount);
@@ -117,7 +129,7 @@ Options:
         static void Dump(string assemblyPath, ref uint protoCount)
         {
             Assembly assembly = Assembly.LoadFrom(assemblyPath);
-            Console.WriteLine($"Processing assembly: {assembly.FullName}");
+            Console.WriteLine($"Processing assembly: {assembly.GetName().Name}");
             if (assembly.GetReferencedAssemblies().Any(a => a.Name == "Google.Protobuf"))
             {
                 Directory.CreateDirectory(OutputFolder);
@@ -126,12 +138,22 @@ Options:
                 foreach (Type type in assembly.GetTypes().Where(t => t.IsClass && t.GetInterfaces().Any(i => i.FullName == "Google.Protobuf.IMessage")))
                 {
                     if (Verbose) Console.WriteLine($"Found message class: {type.FullName} in assembly {assembly.GetName().Name}");
-                    string outputPath = Path.Combine(OutputFolder, $"{type.FullName}.proto");
+                    string outputPath;
+                    if (FlattenPackageFolders)
+                    {
+                        outputPath = Path.Combine(OutputFolder, $"{type.FullName}.proto");
+                    }
+                    else
+                    {
+                        string namespacePath = Path.Combine(OutputFolder, type.Namespace);
+                        outputPath = Path.Combine(namespacePath, $"{type.Name}.proto");
+                        Directory.CreateDirectory(namespacePath);
+                    }
                     StreamWriter outputFile = new StreamWriter(outputPath);
                     outputFile.WriteLine($"// Extracted from {Path.GetFileName(assemblyPath)}");
                     outputFile.WriteLine("syntax = \"proto3\";\n");
                     outputFile.WriteLine($"package {type.Namespace};\n");
-                    List<string> importTypes = new List<string>();
+                    List<Type> importTypes = new List<Type>();
                     ProtoMessage protoMessage = new ProtoMessage
                     {
                         protoName = type.Name
@@ -304,15 +326,15 @@ Options:
                                 {
                                     if (type != propType && (propType.IsEnum || (propType.IsClass && propType.GetInterfaces().Any(i2 => i2.FullName == "Google.Protobuf.IMessage"))))
                                     {
-                                        importTypes.Add(propType.FullName);
+                                        importTypes.Add(propType);
                                     }
                                 }
                             }
                         }
                     }
-                    foreach (string importType in importTypes.Distinct())
+                    foreach (Type importType in importTypes.Distinct())
                     {
-                        outputFile.WriteLine($"import \"{importType}.proto\";");
+                        outputFile.WriteLine($"import \"{(FlattenPackageFolders ? importType.FullName : $"{importType.Namespace}/{importType.Name}")}.proto\";");
                     }
                     if (importTypes.Count > 0)
                     {
@@ -328,7 +350,17 @@ Options:
                 foreach (Type enumType in necessaryEnumTypes.Distinct())
                 {
                     if (Verbose) Console.WriteLine($"Found enum type: {enumType.FullName} in assembly {assembly.GetName().Name}");
-                    string outputPath = Path.Combine(OutputFolder, $"{enumType.FullName}.proto");
+                    string outputPath;
+                    if (FlattenPackageFolders)
+                    {
+                        outputPath = Path.Combine(OutputFolder, $"{enumType.FullName}.proto");
+                    }
+                    else
+                    {
+                        string namespacePath = Path.Combine(OutputFolder, enumType.Namespace);
+                        outputPath = Path.Combine(namespacePath, $"{enumType.Name}.proto");
+                        Directory.CreateDirectory(namespacePath);
+                    }
                     StreamWriter outputFile = new StreamWriter(outputPath);
                     outputFile.WriteLine($"// Extracted from {Path.GetFileName(assemblyPath)}");
                     outputFile.WriteLine("syntax = \"proto3\";\n");
