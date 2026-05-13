@@ -1,3 +1,7 @@
+// #define MapField
+// #define OneOf
+
+using System;
 using System.Collections.Generic;
 
 namespace CSProtobufDumper
@@ -5,26 +9,32 @@ namespace CSProtobufDumper
     public class ProtoMessage
     {
         public string protoName = "";
-        public List<string> importNameList = new List<string>();
+        public List<Type> importTypeList = new List<Type>();
         public List<ProtoField> fieldList = new List<ProtoField>();
-        public List<OneOf> oneOfList = new List<OneOf>();    
+        #if OneOf
+        public List<OneOf> oneOfList = new List<OneOf>();
+        #endif
     }
 
     public class ProtoField
     {
         public string fieldName = "";
         public string fieldType = "";
+        #if MapField
         public string mapKey = null;
         public string mapValue = null;
+        #endif
         public bool isRepeated;
-        public uint val;
+        public uint fieldNumber;
     }
 
+    #if OneOf
     public class OneOf
     {
         public string oneOfName = "";
         public List<ProtoField> fieldList = new List<ProtoField>();
     }
+    #endif
 
     public class ProtoEnum
     {

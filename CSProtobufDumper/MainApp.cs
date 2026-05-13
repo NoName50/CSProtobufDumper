@@ -1,4 +1,8 @@
+// #define MapField // MapField does not exist in the striped Google.Protobuf.dll
+// #define OneOf // It seems that OneOf does not exist in the game
+
 using System;
+using System.CodeDom.Compiler;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -6,22 +10,21 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.Remoting.Messaging;
-using System.Text.RegularExpressions;
 
 namespace CSProtobufDumper
 {
     public class MainApp
     {
-        static string OutputFolder = Path.Combine(Directory.GetCurrentDirectory(), "Output");
+        static bool flattenPackageFolders = false,
+        verbose = false;
 
-        static bool FlattenPackageFolders = false;
-
-        static bool Verbose = false;
+        static string outputFolder = Path.Combine(Directory.GetCurrentDirectory(), "Output"),
+        tabString = "  ";
 
         // Type Reference:
         // https://protobuf.dev/programming-guides/proto3/#scalar
         // https://protobuf.dev/programming-guides/encoding/#structure
-        static readonly Dictionary<string, string> ProtoTypes = new Dictionary<string, string>
+        static readonly Dictionary<string, string> protoTypes = new Dictionary<string, string>
         {
             ["System.Double,1"] = "double",
             ["System.Single,5"] = "float",
@@ -38,11 +41,6 @@ namespace CSProtobufDumper
             ["Google.Protobuf.ByteString,2"] = "bytes"
         };
 
-        static string ParseType(string type, byte wireTypeIndex)
-        {
-            return ProtoTypes.TryGetValue($"{type},{wireTypeIndex}", out string proto) ? proto : type;
-        }
-
         static void Main(string[] args)
         {
             List<string> inputPaths = new List<string>();
@@ -55,7 +53,7 @@ namespace CSProtobufDumper
                     {
                         case "-f":
                         case "--flatten":
-                            FlattenPackageFolders = true;
+                            flattenPackageFolders = true;
                             break;
                         case "-h":
                         case "--help":
@@ -65,27 +63,43 @@ If no dll or folder is specified, all dlls in the current directory will be proc
 
 Usage: CSProtobufDumper [options] [dll/folder]...
 Options:
-  -f, --flatten	Flatten package folders in output (default: false)
-  -h, --help	Show this help message and exit
-  -o, --output <folder>	Specify output folder for generated .proto files (default: ./Output)
-  -v, --verbose	Enable verbose output");
+  -f, --flatten        Flatten package folders in the output directory (default: false)
+  -h, --help           Show help message and exit
+  -i, --indent <num>   Specify the number of spaces for indentation (default: 2)
+  -o, --output <dir>   Specify the output directory for generated .proto files (default: ./Output)
+  -v, --verbose        Enable verbose output");
                             return;
+                        case "-i":
+                        case "--indent":
+                            int indentIndex = Array.IndexOf(args, arg) + 1;
+                            int.TryParse(args[indentIndex], out int tabCount);
+                            if (indentIndex < args.Length && tabCount > 0)
+                            {
+                                tabString = new string(' ', tabCount);
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine("Space count is not specified correctly after " + arg);
+                                return;
+                            }
+                            break;
+
                         case "-o":
                         case "--output":
                             int outputIndex = Array.IndexOf(args, arg) + 1;
                             if (outputIndex < args.Length)
                             {
-                                OutputFolder = args[outputIndex];
+                                outputFolder = args[outputIndex];
                             }
                             else
                             {
-                                Console.Error.WriteLine("Output folder not specified after " + arg);
+                                Console.Error.WriteLine("Output folder is not specified after " + arg);
                                 return;
                             }
                             break;
                         case "-v":
                         case "--verbose":
-                            Verbose = true;
+                            verbose = true;
                             break;
                     }
                 }
@@ -102,7 +116,7 @@ Options:
             {
                 inputPaths.AddRange(Directory.GetFiles(Directory.GetCurrentDirectory(), "*.dll", SearchOption.TopDirectoryOnly));
             }
-            CallContext.LogicalSetData("options", new object[] { FlattenPackageFolders, OutputFolder, Verbose });
+            CallContext.LogicalSetData("options", new object[] { flattenPackageFolders, outputFolder, tabString, verbose });
             Stopwatch stopwatch = Stopwatch.StartNew();
             foreach (string dll in inputPaths)
             {
@@ -111,9 +125,10 @@ Options:
                 domain.DoCallBack(() =>
                 {
                     object[] options = (object[])CallContext.LogicalGetData("options");
-                    FlattenPackageFolders = (bool)options[0];
-                    OutputFolder = (string)options[1];
-                    Verbose = (bool)options[2];
+                    flattenPackageFolders = (bool)options[0];
+                    outputFolder = (string)options[1];
+                    tabString = (string)options[2];
+                    verbose = (bool)options[3];
                     uint assemblyProtoCount = 0;
                     Dump((string)CallContext.LogicalGetData("assemblyPath"), ref assemblyProtoCount);
                     CallContext.LogicalSetData("assemblyProtoCount", assemblyProtoCount);
@@ -132,28 +147,14 @@ Options:
             Console.WriteLine($"Processing assembly: {assembly.GetName().Name}");
             if (assembly.GetReferencedAssemblies().Any(a => a.Name == "Google.Protobuf"))
             {
-                Directory.CreateDirectory(OutputFolder);
+                Directory.CreateDirectory(outputFolder);
                 List<Type> necessaryEnumTypes = new List<Type>();
                 #region DumpMessage
-                foreach (Type type in assembly.GetTypes().Where(t => t.IsClass && t.GetInterfaces().Any(i => i.FullName == "Google.Protobuf.IMessage")))
+                foreach (Type type in assembly.GetTypes().Where(t => t.IsClass && t.GetInterface("Google.Protobuf.IMessage") != null))
                 {
-                    if (Verbose) Console.WriteLine($"Found message class: {type.FullName} in assembly {assembly.GetName().Name}");
-                    string outputPath;
-                    if (FlattenPackageFolders)
-                    {
-                        outputPath = Path.Combine(OutputFolder, $"{type.FullName}.proto");
-                    }
-                    else
-                    {
-                        string namespacePath = Path.Combine(OutputFolder, type.Namespace);
-                        outputPath = Path.Combine(namespacePath, $"{type.Name}.proto");
-                        Directory.CreateDirectory(namespacePath);
-                    }
-                    StreamWriter outputFile = new StreamWriter(outputPath);
-                    outputFile.WriteLine($"// Extracted from {Path.GetFileName(assemblyPath)}");
-                    outputFile.WriteLine("syntax = \"proto3\";\n");
-                    outputFile.WriteLine($"package {type.Namespace};\n");
-                    List<Type> importTypes = new List<Type>();
+                    if (verbose) Console.WriteLine($"Found message class: {type.FullName} in assembly {assembly.GetName().Name}");
+                    IndentedTextWriter outputFile = InitializeFile(assemblyPath, type);
+                    #region ParseMessage
                     ProtoMessage protoMessage = new ProtoMessage
                     {
                         protoName = type.Name
@@ -280,22 +281,22 @@ Options:
 
                             void ProcessProp()
                             {
-                                if (prop.PropertyType.IsGenericType && prop.PropertyType.GetGenericTypeDefinition().FullName == "Google.Protobuf.Collections.RepeatedField`1" && protoMessage.fieldList.Any(f => f.val == fieldNumber))
+                                if (prop.PropertyType.IsGenericType && prop.PropertyType.GetGenericTypeDefinition().FullName == "Google.Protobuf.Collections.RepeatedField`1" && protoMessage.fieldList.Any(f => f.fieldNumber == fieldNumber))
                                 {
                                     // Handle the case where a repeated field has two tags (one for type `repeated` itself with wire type 2 and one for data)
                                     if (wireTypeIndex != 2)
                                     {
                                         // If the first tag is not for data, reparse the data tag and correct the type
-                                        protoMessage.fieldList.First(f => f.val == fieldNumber).fieldType = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName, wireTypeIndex);
+                                        protoMessage.fieldList.First(f => f.fieldNumber == fieldNumber).fieldType = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName);
                                     }
                                     // Skip the second tag for itself
                                     return;
                                 }
-                                if (Verbose) Console.WriteLine($"\tFound Prop {fieldNumber}: {prop.Name} ({prop.PropertyType.Name})");
+                                if (verbose) Console.WriteLine($"\tFound Prop {fieldNumber}: {prop.Name} ({prop.PropertyType.Name})");
                                 ProtoField protoField = new ProtoField
                                 {
                                     fieldName = prop.Name,
-                                    fieldType = ParseType(prop.PropertyType.FullName, wireTypeIndex)
+                                    fieldType = ParseType(prop.PropertyType.FullName)
                                 };
                                 AddImportIfNeed(prop.PropertyType);
                                 if (prop.PropertyType.IsEnum)
@@ -308,40 +309,86 @@ Options:
                                     if (genericTypeFullName == "Google.Protobuf.Collections.RepeatedField`1")
                                     {
                                         protoField.isRepeated = true;
-                                        protoField.fieldType = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName, wireTypeIndex);
+                                        protoField.fieldType = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName);
                                         AddImportIfNeed(prop.PropertyType.GetGenericArguments()[0]);
                                     }
+#if MapField
                                     else if (genericTypeFullName == "Google.Protobuf.Collections.MapField`2")
                                     {
-                                        protoField.mapKey = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName, wireTypeIndex);
-                                        protoField.mapValue = ParseType(prop.PropertyType.GetGenericArguments()[1].FullName, wireTypeIndex);
+                                        protoField.mapKey = ParseType(prop.PropertyType.GetGenericArguments()[0].FullName);
+                                        protoField.mapValue = ParseType(prop.PropertyType.GetGenericArguments()[1].FullName);
                                         AddImportIfNeed(prop.PropertyType.GetGenericArguments()[0]);
                                         AddImportIfNeed(prop.PropertyType.GetGenericArguments()[1]);
                                     }
+#endif
                                 }
-                                protoField.val = fieldNumber;
+                                protoField.fieldNumber = fieldNumber;
                                 protoMessage.fieldList.Add(protoField);
+
+                                string ParseType(string typeFullName)
+                                {
+                                    return protoTypes.TryGetValue($"{typeFullName},{wireTypeIndex}", out string proto) ? proto : typeFullName;
+                                }
 
                                 void AddImportIfNeed(Type propType)
                                 {
-                                    if (type != propType && (propType.IsEnum || (propType.IsClass && propType.GetInterfaces().Any(i2 => i2.FullName == "Google.Protobuf.IMessage"))))
+                                    if (type != propType && (propType.IsEnum || (propType.IsClass && propType.GetInterface("Google.Protobuf.IMessage") != null)))
                                     {
-                                        importTypes.Add(propType);
+                                        protoMessage.importTypeList.Add(propType);
                                     }
                                 }
                             }
                         }
                     }
-                    foreach (Type importType in importTypes.Distinct())
+                    #endregion
+                    #region WriteImport
+                    foreach (Type importType in protoMessage.importTypeList.Distinct())
                     {
-                        outputFile.WriteLine($"import \"{(FlattenPackageFolders ? importType.FullName : $"{importType.Namespace}/{importType.Name}")}.proto\";");
+                        outputFile.WriteLine($"import \"{(flattenPackageFolders ? importType.FullName : $"{importType.Namespace}/{importType.Name}")}.proto\";");
                     }
-                    if (importTypes.Count > 0)
+                    if (protoMessage.importTypeList.Count > 0)
                     {
                         outputFile.WriteLine();
                     }
-                    outputFile.WriteLine($"option csharp_namespace = \"{type.Namespace}\";\n");
-                    WriteMessageToFile(protoMessage, outputFile);
+                    #endregion
+                    #region WriteMessage
+                    outputFile.WriteLine($"message {protoMessage.protoName} {{");
+                    WriteField(protoMessage.fieldList);
+#if OneOf
+                    outputFile.Indent++;
+                    foreach (OneOf oneOf in protoMessage.oneOfList)
+                    {
+                        outputFile.WriteLine($"oneof {oneOf.oneOfName} {{");
+                        WriteField(oneOf.fieldList);
+                        outputFile.WriteLine("}");
+                    }
+                    outputFile.Indent--;
+#endif
+                    outputFile.Write("}");
+
+                    void WriteField(List<ProtoField> fields)
+                    {
+                        outputFile.Indent++;
+                        foreach (ProtoField field in fields)
+                        {
+                            if (field.isRepeated)
+                            {
+                                outputFile.WriteLine($"repeated {field.fieldType} {field.fieldName.PascalToSnake()} = {field.fieldNumber};");
+                            }
+#if MapField
+                            else if (field.mapKey != null)
+                            {
+                                outputFile.WriteLine($"map<{field.mapKey},{field.mapValue}> {field.fieldName.PascalToSnake()} = {field.fieldNumber};");
+                            }
+#endif
+                            else
+                            {
+                                outputFile.WriteLine($"{field.fieldType} {field.fieldName.PascalToSnake()} = {field.fieldNumber};");
+                            }
+                        }
+                        outputFile.Indent--;
+                    }
+                    #endregion
                     outputFile.Close();
                     protoCount++;
                 }
@@ -349,33 +396,29 @@ Options:
                 #region DumpEnum
                 foreach (Type enumType in necessaryEnumTypes.Distinct())
                 {
-                    if (Verbose) Console.WriteLine($"Found enum type: {enumType.FullName} in assembly {assembly.GetName().Name}");
-                    string outputPath;
-                    if (FlattenPackageFolders)
-                    {
-                        outputPath = Path.Combine(OutputFolder, $"{enumType.FullName}.proto");
-                    }
-                    else
-                    {
-                        string namespacePath = Path.Combine(OutputFolder, enumType.Namespace);
-                        outputPath = Path.Combine(namespacePath, $"{enumType.Name}.proto");
-                        Directory.CreateDirectory(namespacePath);
-                    }
-                    StreamWriter outputFile = new StreamWriter(outputPath);
-                    outputFile.WriteLine($"// Extracted from {Path.GetFileName(assemblyPath)}");
-                    outputFile.WriteLine("syntax = \"proto3\";\n");
-                    outputFile.WriteLine($"package {enumType.Namespace};\n");
-                    outputFile.WriteLine($"option csharp_namespace = \"{enumType.Namespace}\";\n");
+                    if (verbose) Console.WriteLine($"Found enum type: {enumType.FullName} in assembly {assembly.GetName().Name}");
+                    IndentedTextWriter outputFile = InitializeFile(assemblyPath, enumType);
+                    #region ParseEnum
                     ProtoEnum protoEnum = new ProtoEnum
                     {
                         enumName = enumType.Name
                     };
                     foreach (var value in Enum.GetValues(enumType))
                     {
-                        if (Verbose) Console.WriteLine($"\tFound enum value: {value} = {Convert.ToInt32(value)}");
+                        if (verbose) Console.WriteLine($"\tFound enum value: {value} = {Convert.ToInt32(value)}");
                         protoEnum.valDict[enumType.Name + "_" + value.ToString()] = Convert.ToInt32(value);
                     }
-                    WriteEnumToFile(protoEnum, outputFile, new List<string>());
+                    #endregion
+                    #region WriteEnum
+                    outputFile.WriteLine($"enum {protoEnum.enumName} {{");
+                    outputFile.Indent++;
+                    foreach (KeyValuePair<string, int> entry in protoEnum.valDict)
+                    {
+                        outputFile.WriteLine($"{entry.Key} = {entry.Value};");
+                    }
+                    outputFile.Indent--;
+                    outputFile.Write("}");
+                    #endregion
                     outputFile.Close();
                     protoCount++;
                 }
@@ -387,67 +430,25 @@ Options:
             }
         }
 
-        static string CamelToSnake(string camelStr)
+        static IndentedTextWriter InitializeFile(string assemblyPath, Type type)
         {
-            bool isAllUppercase = camelStr.All(char.IsUpper); // Beebyte
-            if (string.IsNullOrEmpty(camelStr) || isAllUppercase)
-                return camelStr;
-            return Regex.Replace(camelStr, @"(([a-z])(?=[A-Z][a-zA-Z])|([A-Z])(?=[A-Z][a-z]))", "$1_").ToLower();
-        }
-
-        static void WriteMessageToFile(ProtoMessage msg, StreamWriter writer)
-        {
-            writer.WriteLine($"message {msg.protoName} {{");
-            foreach (ProtoField field in msg.fieldList)
+            string outputPath;
+            if (flattenPackageFolders)
             {
-                if (field.isRepeated)
-                {
-                    writer.WriteLine($"  repeated {field.fieldType} {CamelToSnake(field.fieldName)} = {field.val};");
-                }
-                else if (field.mapKey != null)
-                {
-                    writer.WriteLine($"  map<{field.mapKey},{field.mapValue}> {CamelToSnake(field.fieldName)} = {field.val};");
-                }
-                else
-                {
-                    writer.WriteLine($"  {field.fieldType} {CamelToSnake(field.fieldName)} = {field.val};");
-                }
+                outputPath = Path.Combine(outputFolder, $"{type.FullName}.proto");
             }
-            foreach (OneOf oneOf in msg.oneOfList)
+            else
             {
-                writer.WriteLine($"  oneof {oneOf.oneOfName} {{");
-                foreach (ProtoField field in oneOf.fieldList)
-                {
-                    if (field.isRepeated)
-                    {
-                        writer.WriteLine($"    repeated {field.fieldType} {CamelToSnake(field.fieldName)} = {field.val};");
-                    }
-                    else if (field.mapKey != null)
-                    {
-                        writer.WriteLine($"    map<{field.mapKey},{field.mapValue}> {CamelToSnake(field.fieldName)} = {field.val};");
-                    }
-                    else
-                    {
-                        writer.WriteLine($"    {field.fieldType} {CamelToSnake(field.fieldName)} = {field.val};");
-                    }
-                }
-                writer.WriteLine($"  }}");
+                string namespacePath = Path.Combine(outputFolder, type.Namespace);
+                outputPath = Path.Combine(namespacePath, $"{type.Name}.proto");
+                Directory.CreateDirectory(namespacePath);
             }
-            writer.Write("}");
-        }
-
-        static void WriteEnumToFile(ProtoEnum msg, StreamWriter writer, List<string> blackListEnumNames)
-        {
-            if (blackListEnumNames.Contains(msg.enumName))
-            {
-                return;
-            }
-            writer.WriteLine($"enum {msg.enumName} {{");
-            foreach (KeyValuePair<string, int> entry in msg.valDict)
-            {
-                writer.WriteLine($"  {entry.Key} = {entry.Value};");
-            }
-            writer.WriteLine("}\n");
+            IndentedTextWriter outputFile = new IndentedTextWriter(new StreamWriter(outputPath), "  ");
+            outputFile.WriteLine($"// Extracted from {Path.GetFileName(assemblyPath)}");
+            outputFile.WriteLine("syntax = \"proto3\";\n");
+            outputFile.WriteLine($"package {type.Namespace};\n");
+            outputFile.WriteLine($"option csharp_namespace = \"{type.Namespace}\";\n");
+            return outputFile;
         }
     }
 }
